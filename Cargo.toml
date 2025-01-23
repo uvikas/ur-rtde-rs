@@ -1,0 +1,15 @@
+[package]
+name = "ur_rtde"
+version = "0.1.0"
+edition = "2021"
+
+
+
+[dependencies]
+env_logger = "0.11.6"
+socket2 = "0.5.5"
+tokio = { version = "1.43.0", features = ["full"] }
+log = "0.4.20"
+phf = "0.11.3"
+num-traits = "0.2.19"
+num_enum = "0.7.3"

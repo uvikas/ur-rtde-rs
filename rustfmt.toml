@@ -1,0 +1,11 @@
+max_width = 100
+tab_spaces = 4
+edition = "2021"
+match_block_trailing_comma = true
+use_small_heuristics = "Max"
+reorder_imports = true
+newline_style = "Unix"
+merge_derives = true
+condense_wildcard_suffixes = true
+blank_lines_upper_bound = 2
+fn_brace_style = "AlwaysNextLine"
