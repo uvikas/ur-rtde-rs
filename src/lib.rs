@@ -2,8 +2,9 @@ mod common;
 mod dashboard;
 mod robot_state;
 mod rtde;
-mod rtde_control;
-mod rtde_receive;
+pub mod rtde_control;
+pub mod rtde_receive;
+mod utils;
 
 pub use log;
 

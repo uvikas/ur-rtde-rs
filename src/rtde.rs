@@ -1,9 +1,14 @@
 /* RTDE Protocol */
 
+use crate::robot_state::RobotState;
 use log::debug;
 use socket2::Socket;
-use std::{error::Error, net::SocketAddr};
+use std::net::SocketAddr;
+use std::net::TcpStream;
 use tokio::time::Instant;
+
+use crate::utils::{double2hexstr, hex2bytes};
+const RTDE_PROTOCOL_VERSION: u8 = 2;
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -160,12 +165,58 @@ impl RobotCommand {
 pub trait RTDETrait {}
 
 #[derive(Debug, PartialEq)]
+#[repr(u32)]
+enum RTDECommand {
+    RtdeRequestProtocolVersion = 86,
+    RtdeGetUrcontrolVersion = 118,
+    RtdeTextMessage = 77,
+    RtdeDataPackage = 85,
+    RtdeControlPackageSetupOutputs = 79,
+    RtdeControlPackageSetupInputs = 73,
+    RtdeControlPackageStart = 83,
+    RtdeControlPackagePause = 80,
+}
+
+#[derive(Debug, PartialEq)]
 #[repr(u8)]
 
 enum ConnectionState {
     Disconnected = 0,
     Connected = 1,
     Started = 2,
+}
+
+#[derive(Debug)]
+pub enum RTDEError {
+    ConnectionError(String),
+    ProtocolError(String),
+    StateError(String),
+    NoDataAvailable(String),
+}
+
+impl std::error::Error for RTDEError {}
+
+impl std::fmt::Display for RTDEError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::ConnectionError(msg) => write!(f, "Connection error: {}", msg),
+            Self::ProtocolError(msg) => write!(f, "Protocol error: {}", msg),
+            Self::StateError(msg) => write!(f, "State error: {}", msg),
+            Self::NoDataAvailable(msg) => write!(f, "No data available: {}", msg),
+        }
+    }
+}
+
+impl From<std::io::Error> for RTDEError {
+    fn from(err: std::io::Error) -> Self {
+        RTDEError::ConnectionError(err.to_string())
+    }
+}
+
+impl From<String> for RTDEError {
+    fn from(err: String) -> Self {
+        RTDEError::ConnectionError(err)
+    }
 }
 
 pub struct RTDE {
@@ -181,9 +232,9 @@ pub struct RTDE {
 }
 
 impl RTDE {
-    pub fn new(hostname: String) -> Self {
+    pub fn new(hostname: &str) -> Self {
         Self {
-            hostname: hostname,
+            hostname: hostname.to_string(),
             port: 30004,
             verbose: false,
             conn_state: ConnectionState::Disconnected,
@@ -195,7 +246,7 @@ impl RTDE {
         }
     }
 
-    pub fn connect(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn connect(&mut self) -> Result<(), RTDEError> {
         self.buffer.clear();
 
         let addr = format!("{}:{}", self.hostname, self.port)
@@ -214,7 +265,7 @@ impl RTDE {
         Ok(())
     }
 
-    pub fn disconnect(&mut self, send_pause: bool) -> Result<(), Box<dyn Error>> {
+    pub fn disconnect(&mut self, send_pause: bool) -> Result<(), RTDEError> {
         if self.conn_state == ConnectionState::Connected {
             if send_pause {
                 self.send_pause()?;
@@ -240,51 +291,93 @@ impl RTDE {
         self.conn_state == ConnectionState::Started
     }
 
-    pub fn is_data_available(&self) -> bool {
+    pub fn check_data(stream: &mut TcpStream) -> std::io::Result<bool> {
+        let mut peek_buf = [0u8; 1];
+
+        // Try to peek at the stream
+        match stream.peek(&mut peek_buf) {
+            Ok(0) => Ok(false), // Connection closed
+            Ok(_) => Ok(true),  // Data is available
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false), // No data yet
+            Err(e) => Err(e),   // Some other error occurred
+        }
+    }
+
+    pub fn is_data_available(&mut self) -> bool {
+        if let Some(ref mut stream) = self.stream {
+            Self::check_data(stream).unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    pub fn negotiate_protocol_version(&self) -> Result<(), RTDEError> {
+        let cmd = RTDECommand::RtdeRequestProtocolVersion;
+        let null_byte: u8 = 0;
+        let version: u8 = RTDE_PROTOCOL_VERSION;
+        let buffer: Vec<u8> = vec![null_byte, version];
+        let payload: String = buffer.iter().map(|c| *c as char).collect();
+        self.send_all(cmd as u32, payload)?;
+        debug!("Done sending RTDE_REQUEST_PROTOCOL_VERSION");
+        self.receive()?;
+        Ok(())
+    }
+
+    pub fn receive(&self) -> Result<(), RTDEError> {
         todo!()
     }
 
-    pub fn negogiate_protocol_version(&self) -> Result<(), Box<dyn Error>> {
+    pub fn receive_data(&self, robot_state: &mut RobotState) -> Result<(), RTDEError> {
+        // TODO: this is a big one
         todo!()
     }
 
-    pub fn get_controller_version(&self) -> Result<(), Box<dyn Error>> {
+    pub fn receive_output_types(&self) -> Result<(), RTDEError> {
         todo!()
     }
 
-    pub fn receive_data(&self) -> Result<(), Box<dyn Error>> {
+    pub fn send(&self, command: RobotCommand) -> Result<(), RTDEError> {
         todo!()
     }
 
-    pub fn receive_output_types(&self) -> Result<(), Box<dyn Error>> {
+    pub fn send_all(&self, command: u32, payload: String) -> Result<(), RTDEError> {
         todo!()
     }
 
-    pub fn send(&self, command: RobotCommand) -> Result<(), Box<dyn Error>> {
-        todo!()
+    pub fn send_start(&self) -> Result<(), RTDEError> {
+        let cmd = RTDECommand::RtdeControlPackageStart;
+        self.send_all(cmd as u32, String::new())?;
+        debug!("Done sending RTDE_CONTROL_PACKAGE_START");
+        self.receive()?;
+        Ok(())
     }
 
-    pub fn send_all(&self, command: u8) -> Result<(), Box<dyn Error>> {
-        todo!()
-    }
-
-    pub fn send_start(&self) -> Result<(), Box<dyn Error>> {
-        todo!()
-    }
-
-    pub fn send_pause(&self) -> Result<(), Box<dyn Error>> {
-        todo!()
+    pub fn send_pause(&self) -> Result<(), RTDEError> {
+        let cmd = RTDECommand::RtdeControlPackagePause;
+        self.send_all(cmd as u32, String::new())?;
+        debug!("Done sending RTDE_CONTROL_PACKAGE_PAUSE");
+        self.receive()?;
+        Ok(())
     }
 
     pub fn send_output_setup(
-        &self,
-        output_types: Vec<String>,
+        &mut self,
+        output_names: &Vec<&str>,
         frequency: f64,
-    ) -> Result<(), Box<dyn Error>> {
-        todo!()
+    ) -> Result<(), RTDEError> {
+        let cmd = RTDECommand::RtdeControlPackageSetupOutputs;
+        self.output_names = output_names.iter().map(|&s| s.to_string()).collect();
+        let freq_as_hexstr = double2hexstr(frequency);
+        let freq_packed = hex2bytes(freq_as_hexstr);
+        let output_names_str = self.output_names.join(",");
+        let payload = output_names_str + &freq_packed;
+        self.send_all(cmd as u32, payload)?;
+        debug!("Done sending RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS");
+        self.receive()?;
+        Ok(())
     }
 
-    pub fn send_input_setup(&self, input_types: Vec<String>) -> Result<(), Box<dyn Error>> {
+    pub fn send_input_setup(&self, input_types: Vec<String>) -> Result<(), RTDEError> {
         todo!()
     }
 }
