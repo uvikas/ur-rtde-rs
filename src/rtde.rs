@@ -3,12 +3,16 @@
 use crate::robot_state::RobotState;
 use log::debug;
 use socket2::Socket;
+use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::net::TcpStream;
+use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::utils::{double2hexstr, hex2bytes};
+
 const RTDE_PROTOCOL_VERSION: u8 = 2;
+const HEADER_SIZE: u16 = 3;
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -257,10 +261,12 @@ impl RTDE {
         stream.set_nodelay(true)?;
 
         // Create socket and configure it
-        let sock = Socket::from(stream.try_clone()?);
-        sock.set_reuse_address(true)?;
+        // let sock = Socket::from(stream.try_clone()?);
+        // sock.set_reuse_address(true)?;
         self.stream = Some(stream);
         self.conn_state = ConnectionState::Connected;
+
+        debug!("Connected to robot!");
 
         Ok(())
     }
@@ -311,24 +317,185 @@ impl RTDE {
         }
     }
 
-    pub fn negotiate_protocol_version(&self) -> Result<(), RTDEError> {
+    pub fn negotiate_protocol_version(&mut self) -> Result<(), RTDEError> {
         let cmd = RTDECommand::RtdeRequestProtocolVersion;
-        let null_byte: u8 = 0;
         let version: u8 = RTDE_PROTOCOL_VERSION;
-        let buffer: Vec<u8> = vec![null_byte, version];
-        let payload: String = buffer.iter().map(|c| *c as char).collect();
+        let buffer: Vec<u8> = vec![0, version]; // First byte is null, second is version
+
+        debug!("Negotiating protocol version {}", version);
+        let payload: String = String::from_utf8_lossy(&buffer).to_string();
         self.send_all(cmd as u32, payload)?;
         debug!("Done sending RTDE_REQUEST_PROTOCOL_VERSION");
-        self.receive()?;
-        Ok(())
+
+        // Receive and process response
+        match self.receive() {
+            Ok(_) => {
+                debug!("Protocol version negotiation successful");
+                Ok(())
+            },
+            Err(e) => {
+                debug!("Protocol version negotiation failed: {:?}", e);
+                Err(e)
+            },
+        }
     }
 
-    pub fn receive(&self) -> Result<(), RTDEError> {
-        todo!()
+    pub fn receive(&mut self) -> Result<(), RTDEError> {
+        debug!("Receiving...");
+
+        // Set read timeout on the socket
+        self.stream
+            .as_mut()
+            .ok_or(RTDEError::ConnectionError("No stream available".to_string()))?
+            .set_read_timeout(Some(Duration::from_secs(2)))?;
+
+        // Read Header
+        let mut header_data = vec![0u8; HEADER_SIZE as usize];
+        let read_result = self
+            .stream
+            .as_mut()
+            .ok_or(RTDEError::ConnectionError("No stream available".to_string()))?
+            .read_exact(&mut header_data);
+
+        match read_result {
+            Ok(_) => {
+                let msg_size: u16 = u16::from_be_bytes([header_data[0], header_data[1]]);
+                let msg_cmd: u8 = header_data[2];
+
+                debug!("ControlHeader:");
+                debug!("size is: {}", msg_size);
+                debug!("command is: {}", msg_cmd);
+
+                // Validate message size to prevent potential issues
+                if msg_size < HEADER_SIZE || msg_size > 4096 {
+                    return Err(RTDEError::ProtocolError(format!(
+                        "Invalid message size: {}",
+                        msg_size
+                    )));
+                }
+
+                // Read Body
+                let body_size = (msg_size - HEADER_SIZE) as usize;
+                let mut data = vec![0u8; body_size];
+
+                match self.stream.as_mut().unwrap().read_exact(&mut data) {
+                    Ok(_) => {
+                        debug!("Received body data of size: {}", body_size);
+                        // Process the response based on msg_cmd
+                        match msg_cmd as u32 {
+                            cmd if cmd == RTDECommand::RtdeTextMessage as u32 => {
+                                let msg_length = data[0];
+                                let msg_content =
+                                    String::from_utf8_lossy(&data[1..msg_length as usize])
+                                        .to_string();
+                                debug!("Text message: {}", msg_content);
+                            },
+                            cmd if cmd == RTDECommand::RtdeRequestProtocolVersion as u32 => {
+                                if body_size > 0 {
+                                    debug!("Protocol version response: {:?}", data);
+                                }
+                            },
+                            cmd if cmd == RTDECommand::RtdeGetUrcontrolVersion as u32 => {
+                                debug!("ControlVersion:");
+                                // Commented out as in original:
+                                // let mut message_offset = 0;
+                                // let v_major = get_uint32(&data, &mut message_offset);
+                                // let v_minor = get_uint32(&data, &mut message_offset);
+                                // let v_bugfix = get_uint32(&data, &mut message_offset);
+                                // let v_build = get_uint32(&data, &mut message_offset);
+                                // debug!("{}.{}.{}.{}", v_major, v_minor, v_bugfix, v_build);
+                            },
+                            cmd if cmd == RTDECommand::RtdeControlPackageSetupInputs as u32 => {
+                                let datatypes = String::from_utf8_lossy(&data[1..]).to_string();
+                                debug!("Datatype: {}", datatypes);
+
+                                if datatypes.contains("IN_USE") {
+                                    return Err(RTDEError::ProtocolError(
+                                    "One of the RTDE input registers are already in use! Currently you must disable the EtherNet/IP adapter, \
+                                     PROFINET or any MODBUS unit configured on the robot. This might change in the future.".to_string()
+                                ));
+                                }
+                            },
+                            cmd if cmd == RTDECommand::RtdeControlPackageSetupOutputs as u32 => {
+                                let datatypes = String::from_utf8_lossy(&data[1..]).to_string();
+                                debug!("Datatype: {}", datatypes);
+                                self.output_types =
+                                    datatypes.split(',').map(String::from).collect();
+
+                                if datatypes.contains("NOT_FOUND") {
+                                    let not_found_indexes: Vec<usize> = self
+                                        .output_types
+                                        .iter()
+                                        .enumerate()
+                                        .filter(|(_, t)| *t == "NOT_FOUND")
+                                        .map(|(i, _)| i)
+                                        .collect();
+
+                                    let vars_not_found: String = not_found_indexes
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, &idx)| {
+                                            let var = &self.output_names[idx];
+                                            if i == not_found_indexes.len() - 1 {
+                                                var.to_string()
+                                            } else {
+                                                format!("{}, ", var)
+                                            }
+                                        })
+                                        .collect();
+
+                                    let error_msg = format!(
+                                    "The following variables was not found by the controller: [{}],\n \
+                                     see which variables are supported by your PolyScope version here: \n\
+                                     https://www.universal-robots.com/articles/ur/interface-communication/real-time-data-exchange-rtde-guide/",
+                                    vars_not_found
+                                );
+                                    return Err(RTDEError::ProtocolError(error_msg));
+                                }
+                            },
+                            cmd if cmd == RTDECommand::RtdeControlPackageStart as u32 => {
+                                let success = data[0] != 0;
+                                debug!("success: {}", success);
+
+                                if success {
+                                    self.conn_state = ConnectionState::Started;
+                                    if self.verbose {
+                                        println!("RTDE synchronization started");
+                                    }
+                                } else {
+                                    eprintln!("Unable to start synchronization");
+                                }
+                            },
+                            cmd if cmd == RTDECommand::RtdeControlPackagePause as u32 => {
+                                let success = data[0] != 0;
+                                debug!("success: {}", success);
+
+                                if success {
+                                    self.conn_state = ConnectionState::Connected; // Note: Using Connected instead of Paused
+                                    debug!("RTDE synchronization paused!");
+                                } else {
+                                    eprintln!("Unable to pause synchronization");
+                                }
+                            },
+                            _ => {
+                                debug!("Unknown Command: {}", msg_cmd);
+                            },
+                        }
+                        Ok(())
+                    },
+                    Err(e) => Err(RTDEError::ConnectionError(format!(
+                        "Failed to read message body: {}",
+                        e
+                    ))),
+                }
+            },
+            Err(e) => Err(RTDEError::ConnectionError(format!("Failed to read header: {}", e))),
+        }
     }
 
     pub fn receive_data(&self, robot_state: &mut RobotState) -> Result<(), RTDEError> {
         // TODO: this is a big one
+        debug!("Receiving data...");
         todo!()
     }
 
@@ -340,11 +507,41 @@ impl RTDE {
         todo!()
     }
 
-    pub fn send_all(&self, command: u32, payload: String) -> Result<(), RTDEError> {
-        todo!()
+    pub fn send_all(&mut self, command: u32, payload: String) -> Result<(), RTDEError> {
+        debug!("Sending... {}", command);
+        // payload.as_bytes().iter().for_each(|b| debug!("Byte: {}", b));
+        debug!("Payload size: {}", payload.len());
+        debug!("Payload string: {}", payload);
+
+        let size: u16 = HEADER_SIZE + (payload.len() as u16);
+        let cmd_type: u8 = command as u8;
+
+        let mut header = [0u8; 3];
+        header[0] = ((size >> 8) & 0xFF) as u8;
+        header[1] = (size & 0xFF) as u8;
+        header[2] = cmd_type;
+
+        debug!("Header data: {} {} {}", size, size.to_be(), cmd_type);
+        debug!("Header: {:?}", header);
+
+        let payload_bytes = payload.as_bytes();
+        let mut buffer = Vec::with_capacity(header.len() + payload_bytes.len());
+        buffer.extend_from_slice(&header);
+        buffer.extend_from_slice(payload_bytes);
+
+        debug!("Buffer size: {}", buffer.len());
+        debug!("Buffer: {:?}", buffer);
+        debug!("Buffer as string: {}", String::from_utf8_lossy(&buffer));
+
+        if self.is_connected() {
+            self.stream.as_mut().unwrap().write_all(&buffer)?;
+            debug!("Done sending all");
+        }
+
+        Ok(())
     }
 
-    pub fn send_start(&self) -> Result<(), RTDEError> {
+    pub fn send_start(&mut self) -> Result<(), RTDEError> {
         let cmd = RTDECommand::RtdeControlPackageStart;
         self.send_all(cmd as u32, String::new())?;
         debug!("Done sending RTDE_CONTROL_PACKAGE_START");
@@ -352,7 +549,7 @@ impl RTDE {
         Ok(())
     }
 
-    pub fn send_pause(&self) -> Result<(), RTDEError> {
+    pub fn send_pause(&mut self) -> Result<(), RTDEError> {
         let cmd = RTDECommand::RtdeControlPackagePause;
         self.send_all(cmd as u32, String::new())?;
         debug!("Done sending RTDE_CONTROL_PACKAGE_PAUSE");
@@ -368,10 +565,23 @@ impl RTDE {
         let cmd = RTDECommand::RtdeControlPackageSetupOutputs;
         self.output_names = output_names.iter().map(|&s| s.to_string()).collect();
         let freq_as_hexstr = double2hexstr(frequency);
-        let freq_packed = hex2bytes(freq_as_hexstr);
-        let output_names_str = self.output_names.join(",");
-        let payload = output_names_str + &freq_packed;
-        self.send_all(cmd as u32, payload)?;
+        let freq_packed = hex2bytes(&freq_as_hexstr);
+
+        let output_names_str = self.output_names.join(",") + ",";
+
+        debug!("freq_as_hexstr: {}", freq_as_hexstr);
+        debug!("freq_packed: {:?}", freq_packed);
+        debug!("output_names_str: {}", output_names_str);
+        debug!("output setup lengths: {} {}", output_names_str.chars().count(), freq_packed.len());
+
+        let mut payload: Vec<u8> =
+            Vec::with_capacity(output_names_str.as_bytes().len() + freq_packed.len());
+        payload.extend_from_slice(&freq_packed);
+        payload.extend_from_slice(output_names_str.as_bytes());
+
+        debug!("Payload: {} {:?}", payload.len(), payload);
+
+        self.send_all(cmd as u32, String::from_utf8_lossy(&payload).to_string())?;
         debug!("Done sending RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS");
         self.receive()?;
         Ok(())

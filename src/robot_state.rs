@@ -1,5 +1,6 @@
 // Shared Robot State
 
+use log::debug;
 use phf::phf_map;
 use std::collections::HashMap;
 use std::error::Error;
@@ -78,6 +79,7 @@ const STATE_DATA_TYPES: phf::Map<&str, StateDataTypes> = phf_map! {
     "target_moment" => StateDataTypes::VectorDouble(Vec::new()),
     "actual_q" => StateDataTypes::VectorDouble(Vec::new()),
     "actual_qd" => StateDataTypes::VectorDouble(Vec::new()),
+    "actual_qdd" => StateDataTypes::VectorDouble(Vec::new()),
     "actual_current" => StateDataTypes::VectorDouble(Vec::new()),
     "joint_control_output" => StateDataTypes::VectorDouble(Vec::new()),
     "actual_TCP_pose" => StateDataTypes::VectorDouble(Vec::new()),

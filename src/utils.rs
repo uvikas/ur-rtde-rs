@@ -3,15 +3,29 @@
 use std::fmt::Write;
 
 pub fn double2hexstr(x: f64) -> String {
-    // Use a union-like structure with the `transmute` method
-    let value: u64 = unsafe { std::mem::transmute(x) };
+    // Union-like reinterpretation of f64 as i64
+    let value: i64 = unsafe { std::mem::transmute(x) };
 
-    // Create a string buffer and format the hex value
+    // Format the value as a hex string with std::fmt
     let mut buf = String::new();
-    write!(&mut buf, "{:016x}", value).unwrap(); // Format as a zero-padded 16-character hexadecimal
+    write!(&mut buf, "{:06x}", value).unwrap();
+
     buf
 }
 
-pub fn hex2bytes(hexstr: String) -> String {
-    hexstr
+pub fn hex2bytes(hex: &str) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    for i in (0..hex.len()).step_by(2) {
+        if let Some(byte) = hex.get(i..i + 2) {
+            if let Ok(parsed_byte) = u8::from_str_radix(byte, 16) {
+                bytes.push(parsed_byte);
+            } else {
+                // Handle invalid hex input if needed
+                panic!("Invalid hex input: {}", byte);
+            }
+        }
+    }
+
+    bytes
 }

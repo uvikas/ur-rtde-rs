@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::robot_state::RobotState;
 use crate::rtde::{RTDEError, RTDE};
+use log::debug;
 
 // All RTDE fields for e-series UR
 const RTDE_FIELDS: &[&str] = &[
@@ -48,6 +49,27 @@ const RTDE_FIELDS: &[&str] = &[
     "standard_analog_output1",
     "robot_status_bits",
     "safety_status_bits",
+    "ft_raw_wrench",
+    "payload",
+    "payload_cog",
+    "payload_inertia",
+    "output_int_register_2",
+    "output_int_register_12",
+    "output_int_register_13",
+    "output_int_register_14",
+    "output_int_register_15",
+    "output_int_register_16",
+    "output_int_register_17",
+    "output_int_register_18",
+    "output_int_register_19",
+    "output_double_register_12",
+    "output_double_register_13",
+    "output_double_register_14",
+    "output_double_register_15",
+    "output_double_register_16",
+    "output_double_register_17",
+    "output_double_register_18",
+    "output_double_register_19",
 ];
 
 #[repr(u32)]
@@ -75,7 +97,6 @@ pub struct RTDEReceive {
     rtde: Arc<Mutex<RTDE>>,
 
     stop_receive_thread: Arc<AtomicBool>,
-    stop_record_thread: Arc<AtomicBool>,
     receive_thread: Option<thread::JoinHandle<()>>,
     no_bytes_avail_cnt: u32,
 }
@@ -93,6 +114,7 @@ impl RTDEReceive {
         }
 
         let fields = RTDE_FIELDS.to_vec();
+        debug!("fields: {:?}", fields);
         let robot_state = Arc::new(Mutex::new(RobotState::new(&fields)));
 
         {
@@ -108,7 +130,6 @@ impl RTDEReceive {
             robot_state: robot_state.clone(),
             rtde: rtde.clone(),
             stop_receive_thread: Arc::new(AtomicBool::new(false)),
-            stop_record_thread: Arc::new(AtomicBool::new(false)),
             receive_thread: None,
             no_bytes_avail_cnt: 0,
         };
