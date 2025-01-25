@@ -98,7 +98,7 @@ pub struct RTDEReceive {
 
     stop_receive_thread: Arc<AtomicBool>,
     receive_thread: Option<thread::JoinHandle<()>>,
-    no_bytes_avail_cnt: u32,
+    no_bytes_avail_cnt: Arc<Mutex<u32>>,
 }
 
 impl RTDEReceive {
@@ -131,7 +131,7 @@ impl RTDEReceive {
             rtde: rtde.clone(),
             stop_receive_thread: Arc::new(AtomicBool::new(false)),
             receive_thread: None,
-            no_bytes_avail_cnt: 0,
+            no_bytes_avail_cnt: Arc::new(Mutex::new(0)),
         };
         interface.start_receive_thread()?;
 
@@ -151,45 +151,36 @@ impl RTDEReceive {
         let rtde = self.rtde.clone();
         let robot_state = self.robot_state.clone();
         let stop_receive_thread = self.stop_receive_thread.clone();
+        let no_bytes_avail_cnt = self.no_bytes_avail_cnt.clone();
 
         self.receive_thread = Some(thread::spawn(move || {
             while !stop_receive_thread.load(Ordering::Relaxed) {
                 // Use cloned values instead of self
                 let mut rtde_lock = rtde.lock().unwrap();
-                let mut robot_state_lock = robot_state.lock().unwrap();
+                // let mut robot_state_lock = robot_state.lock().unwrap();
 
                 if rtde_lock.is_data_available() {
-                    rtde_lock.receive_data(&mut robot_state_lock).unwrap();
+                    let mut no_bytes_avail_cnt_lock = no_bytes_avail_cnt.lock().unwrap();
+                    *no_bytes_avail_cnt_lock = 0;
+                    rtde_lock.receive_data(&robot_state).unwrap();
+                } else {
+                    let mut no_bytes_avail_cnt_lock = no_bytes_avail_cnt.lock().unwrap();
+                    *no_bytes_avail_cnt_lock += 1;
+                    if *no_bytes_avail_cnt_lock > 20 {
+                        match rtde_lock.receive_data(&robot_state) {
+                            Ok(_) => {
+                                *no_bytes_avail_cnt_lock = 0;
+                            },
+                            Err(e) => {
+                                break;
+                            },
+                        }
+                    }
                 }
                 thread::sleep(Duration::from_millis(100));
             }
         }));
 
-        Ok(())
-    }
-
-    fn get_available_bytes(&mut self) -> Result<(), RTDEError> {
-        let mut rtde_lock = self.rtde.lock().unwrap();
-        let mut robot_state_lock = self.robot_state.lock().unwrap();
-
-        if rtde_lock.is_data_available() {
-            self.no_bytes_avail_cnt = 0;
-            rtde_lock.receive_data(&mut robot_state_lock)?;
-            return Ok(());
-        } else {
-            self.no_bytes_avail_cnt += 1;
-            if self.no_bytes_avail_cnt > 20 {
-                match rtde_lock.receive_data(&mut robot_state_lock) {
-                    Ok(_) => {
-                        self.no_bytes_avail_cnt = 0;
-                        return Ok(());
-                    },
-                    Err(e) => {
-                        return Err(RTDEError::NoDataAvailable(e.to_string()));
-                    },
-                }
-            }
-        }
         Ok(())
     }
 

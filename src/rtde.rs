@@ -1,15 +1,18 @@
 /* RTDE Protocol */
 
-use crate::robot_state::RobotState;
+use crate::robot_state::{RobotState, StateDataTypes};
 use log::debug;
-use socket2::Socket;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::net::TcpStream;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::time::Instant;
 
-use crate::utils::{double2hexstr, hex2bytes};
+use crate::utils::{
+    double2hexstr, get_bool, get_double, get_i32, get_u32, get_u64, get_u8, hex2bytes,
+    read_rtde_header, unpack_vector3d, unpack_vector6_i32, unpack_vector6d,
+};
 
 const RTDE_PROTOCOL_VERSION: u8 = 2;
 const HEADER_SIZE: u16 = 3;
@@ -231,7 +234,7 @@ pub struct RTDE {
     output_types: Vec<String>,
     output_names: Vec<String>,
     stream: Option<std::net::TcpStream>,
-    buffer: Vec<char>,
+    buffer: Vec<u8>,
     deadline: Instant,
 }
 
@@ -493,10 +496,162 @@ impl RTDE {
         }
     }
 
-    pub fn receive_data(&self, robot_state: &mut RobotState) -> Result<(), RTDEError> {
-        // TODO: this is a big one
-        debug!("Receiving data...");
-        todo!()
+    pub fn receive_data(&mut self, robot_state: &Arc<Mutex<RobotState>>) -> Result<(), RTDEError> {
+        let mut message_offset: u32 = 0;
+        let mut packet_data_offset: u32 = 0;
+
+        // Prepare buffer of 4096 bytes
+        let mut data = vec![0u8; 4096];
+
+        // Read from socket
+        let data_len = self
+            .stream
+            .as_mut()
+            .ok_or(RTDEError::ConnectionError("No stream available".to_string()))?
+            .read(&mut data)?;
+
+        // Add data to the buffer
+        self.buffer.extend(data[..data_len].iter());
+
+        while self.buffer.len() >= HEADER_SIZE as usize {
+            message_offset = 0;
+
+            // Read RTDEControlHeader
+            let packet_header = read_rtde_header(&self.buffer, &mut message_offset);
+
+            if self.buffer.len() >= packet_header.msg_size as usize {
+                debug!(
+                    "Packet header msg size: {}, buffer len: {}",
+                    packet_header.msg_size,
+                    self.buffer.len()
+                );
+                // Read data package and adjust buffer
+                let mut header_and_packet: Vec<u8> =
+                    self.buffer.drain(..packet_header.msg_size as usize).collect();
+                let packet: Vec<u8> = header_and_packet.drain(HEADER_SIZE as usize..).collect();
+
+                // Check for consecutive data packages
+                if self.buffer.len() >= HEADER_SIZE as usize
+                    && packet_header.msg_cmd == RTDECommand::RtdeDataPackage as u8
+                {
+                    let next_header = read_rtde_header(&self.buffer, &mut message_offset);
+                    if next_header.msg_cmd == RTDECommand::RtdeDataPackage as u8 {
+                        if self.verbose {
+                            println!("skipping package(1)");
+                        }
+                        continue;
+                    }
+                }
+
+                if packet_header.msg_cmd == RTDECommand::RtdeDataPackage as u8 {
+                    packet_data_offset = 0;
+                    let _recipe_id = get_u8(&packet, &mut packet_data_offset);
+
+                    // Lock the robot state for updates
+                    let mut robot_state_lock = robot_state.lock().unwrap();
+
+                    // Read all variables specified by the user
+                    for output_name in &self.output_names {
+                        if let Some(entry) = robot_state_lock.state_data.get(output_name) {
+                            match entry {
+                                StateDataTypes::VectorDouble(_) => {
+                                    let parsed_data: Vec<f64> = if output_name
+                                        == "actual_tool_accelerometer"
+                                        || output_name == "payload_cog"
+                                        || output_name == "elbow_position"
+                                        || output_name == "elbow_velocity"
+                                    {
+                                        unpack_vector3d(&packet, &mut packet_data_offset)
+                                    } else {
+                                        unpack_vector6d(&packet, &mut packet_data_offset)
+                                    };
+                                    debug!(
+                                        "{} VectorDouble Parsed data: {:?}",
+                                        output_name, parsed_data
+                                    );
+                                    robot_state_lock.state_data.insert(
+                                        output_name.to_string(),
+                                        StateDataTypes::VectorDouble(parsed_data),
+                                    );
+                                },
+                                StateDataTypes::Double(_) => {
+                                    let parsed_data = get_double(&packet, &mut packet_data_offset);
+                                    debug!("{} Double Parsed data: {:?}", output_name, parsed_data);
+                                    robot_state_lock.state_data.insert(
+                                        output_name.to_string(),
+                                        StateDataTypes::Double(parsed_data),
+                                    );
+                                },
+                                StateDataTypes::Int32(_) => {
+                                    let parsed_data = get_i32(&packet, &mut packet_data_offset);
+                                    debug!("{} Int32 Parsed data: {:?}", output_name, parsed_data);
+                                    robot_state_lock.state_data.insert(
+                                        output_name.to_string(),
+                                        StateDataTypes::Int32(parsed_data),
+                                    );
+                                },
+                                StateDataTypes::Uint32(_) => {
+                                    let parsed_data = get_u32(&packet, &mut packet_data_offset);
+                                    debug!("{} Uint32 Parsed data: {:?}", output_name, parsed_data);
+                                    robot_state_lock.state_data.insert(
+                                        output_name.to_string(),
+                                        StateDataTypes::Uint32(parsed_data),
+                                    );
+                                },
+                                StateDataTypes::Uint64(_) => {
+                                    let parsed_data = get_u64(&packet, &mut packet_data_offset);
+                                    debug!("{} Uint64 Parsed data: {:?}", output_name, parsed_data);
+                                    robot_state_lock.state_data.insert(
+                                        output_name.to_string(),
+                                        StateDataTypes::Uint64(parsed_data),
+                                    );
+                                },
+                                StateDataTypes::VectorInt(_) => {
+                                    let parsed_data =
+                                        unpack_vector6_i32(&packet, &mut packet_data_offset);
+                                    debug!(
+                                        "{} VectorInt Parsed data: {:?}",
+                                        output_name, parsed_data
+                                    );
+                                    robot_state_lock.state_data.insert(
+                                        output_name.to_string(),
+                                        StateDataTypes::VectorInt(parsed_data),
+                                    );
+                                },
+                                StateDataTypes::Boolean(_) => {
+                                    let parsed_data = get_bool(&packet, &mut packet_data_offset);
+                                    debug!(
+                                        "{} Boolean Parsed data: {:?}",
+                                        output_name, parsed_data
+                                    );
+                                    robot_state_lock.state_data.insert(
+                                        output_name.to_string(),
+                                        StateDataTypes::Boolean(parsed_data),
+                                    );
+                                },
+                            }
+                        } else {
+                            debug!(
+                                "Unknown variable name: {} please verify the output setup!",
+                                output_name
+                            );
+                        }
+                    }
+
+                    if !robot_state_lock.get_first_state_received() {
+                        robot_state_lock.set_first_state_received(true);
+                    }
+
+                    drop(robot_state_lock);
+                } else if self.verbose {
+                    println!("skipping package(2)");
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(())
     }
 
     pub fn receive_output_types(&self) -> Result<(), RTDEError> {

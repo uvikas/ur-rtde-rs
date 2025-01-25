@@ -1,6 +1,5 @@
 // Shared Robot State
 
-use log::debug;
 use phf::phf_map;
 use std::collections::HashMap;
 use std::error::Error;
@@ -214,7 +213,7 @@ const STATE_DATA_TYPES: phf::Map<&str, StateDataTypes> = phf_map! {
 };
 
 pub struct RobotState {
-    state_data: HashMap<String, StateDataTypes>,
+    pub state_data: HashMap<String, StateDataTypes>,
     first_state_received: bool,
 }
 
