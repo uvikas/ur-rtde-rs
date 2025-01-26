@@ -3,6 +3,8 @@
 use phf::phf_map;
 use std::collections::HashMap;
 use std::error::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use crate::rtde::RTDEError;
 
@@ -89,7 +91,7 @@ const STATE_DATA_TYPES: phf::Map<&str, StateDataTypes> = phf_map! {
     "actual_digital_input_bits" => StateDataTypes::Uint64(0),
     "joint_temperatures" => StateDataTypes::VectorDouble(Vec::new()),
     "actual_execution_time" => StateDataTypes::Double(0.0),
-    "robot_mode" => StateDataTypes::Uint32(0),
+    "robot_mode" => StateDataTypes::Int32(0),
     "joint_mode" => StateDataTypes::VectorInt(Vec::new()),
     "safety_mode" => StateDataTypes::Uint32(0),
     "actual_tool_accelerometer" => StateDataTypes::VectorDouble(Vec::new()),
@@ -214,25 +216,28 @@ const STATE_DATA_TYPES: phf::Map<&str, StateDataTypes> = phf_map! {
 
 pub struct RobotState {
     pub state_data: HashMap<String, StateDataTypes>,
-    first_state_received: bool,
+    pub first_state_received: Arc<AtomicBool>,
 }
 
 impl RobotState {
     // Create new RobotState.
     pub fn new(fields: &Vec<&str>) -> Self {
-        let mut robot_state = Self { state_data: HashMap::new(), first_state_received: false };
+        let mut robot_state = Self {
+            state_data: HashMap::new(),
+            first_state_received: Arc::new(AtomicBool::new(false)),
+        };
         robot_state.init_robot_state(fields);
         robot_state
     }
 
     // Get first state received.
     pub fn get_first_state_received(&self) -> bool {
-        self.first_state_received
+        self.first_state_received.load(Ordering::Relaxed)
     }
 
     // Set first state received.
     pub fn set_first_state_received(&mut self, val: bool) {
-        self.first_state_received = val;
+        self.first_state_received.store(val, Ordering::Relaxed);
     }
 
     // Get state data.

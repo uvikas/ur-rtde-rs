@@ -1,17 +1,19 @@
+use tokio::time::Duration;
 use ur_rtde::init_logging;
 use ur_rtde::rtde_receive::RTDEReceive;
 
-fn test_rtde_receive() {
-    let rtde = RTDEReceive::new("10.42.1.100").unwrap();
+async fn test_rtde_receive() {
+    let rtde = RTDEReceive::new("10.42.1.100").await.unwrap();
 
     loop {
-        let robot_joints = rtde.get_actual_q().unwrap();
+        let robot_joints = rtde.get_actual_q().await.unwrap();
         println!("Robot joints: {:?}", robot_joints);
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     init_logging();
-    test_rtde_receive();
+    test_rtde_receive().await;
 }

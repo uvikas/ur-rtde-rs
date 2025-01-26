@@ -137,7 +137,6 @@ pub fn unpack_vector6_i32(data: &[u8], message_offset: &mut u32) -> Vec<i32> {
     for _ in 0..6 {
         let int32_value = get_i32(data, message_offset);
         vector_6_int32.push(int32_value);
-        *message_offset += 4; // Assuming 4 bytes per i32
     }
     vector_6_int32
 }

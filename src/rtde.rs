@@ -1,12 +1,15 @@
 /* RTDE Protocol */
 
 use crate::robot_state::{RobotState, StateDataTypes};
-use log::debug;
+use log::{debug, info};
+use socket2::{Domain, Socket, Type};
 use std::io::{Read, Write};
 use std::net::SocketAddr;
-use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::utils::{
@@ -233,7 +236,7 @@ pub struct RTDE {
     conn_state: ConnectionState,
     output_types: Vec<String>,
     output_names: Vec<String>,
-    stream: Option<std::net::TcpStream>,
+    stream: Option<tokio::net::TcpStream>,
     buffer: Vec<u8>,
     deadline: Instant,
 }
@@ -253,19 +256,15 @@ impl RTDE {
         }
     }
 
-    pub fn connect(&mut self) -> Result<(), RTDEError> {
+    pub async fn connect(&mut self) -> Result<(), RTDEError> {
         self.buffer.clear();
-
         let addr = format!("{}:{}", self.hostname, self.port)
             .parse::<SocketAddr>()
             .map_err(|e| format!("Invalid address: {}", e))?;
 
-        let stream = std::net::TcpStream::connect(addr)?;
+        let stream = TcpStream::connect(&addr).await?;
         stream.set_nodelay(true)?;
 
-        // Create socket and configure it
-        // let sock = Socket::from(stream.try_clone()?);
-        // sock.set_reuse_address(true)?;
         self.stream = Some(stream);
         self.conn_state = ConnectionState::Connected;
 
@@ -274,21 +273,12 @@ impl RTDE {
         Ok(())
     }
 
-    pub fn disconnect(&mut self, send_pause: bool) -> Result<(), RTDEError> {
-        if self.conn_state == ConnectionState::Connected {
-            if send_pause {
-                self.send_pause()?;
-            }
+    pub async fn disconnect(&mut self) -> Result<(), RTDEError> {
+        if let Some(mut stream) = self.stream.take() {
+            stream.shutdown().await?;
         }
-
-        if let Some(stream) = self.stream.take() {
-            stream.shutdown(std::net::Shutdown::Both)?;
-        }
-
         self.conn_state = ConnectionState::Disconnected;
-
         debug!("Disconnected from robot");
-
         Ok(())
     }
 
@@ -300,11 +290,18 @@ impl RTDE {
         self.conn_state == ConnectionState::Started
     }
 
-    pub fn check_data(stream: &mut TcpStream) -> std::io::Result<bool> {
+    pub async fn check_data(stream: &mut TcpStream) -> std::io::Result<bool> {
         let mut peek_buf = [0u8; 1];
 
-        // Try to peek at the stream
-        match stream.peek(&mut peek_buf) {
+        // // Try to peek at the stream
+        // match stream.peek(&mut peek_buf) {
+        //     Ok(0) => Ok(false), // Connection closed
+        //     Ok(_) => Ok(true),  // Data is available
+        //     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false), // No data yet
+        //     Err(e) => Err(e),   // Some other error occurred
+        // }
+
+        match stream.peek(&mut peek_buf).await {
             Ok(0) => Ok(false), // Connection closed
             Ok(_) => Ok(true),  // Data is available
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(false), // No data yet
@@ -312,26 +309,26 @@ impl RTDE {
         }
     }
 
-    pub fn is_data_available(&mut self) -> bool {
+    pub async fn is_data_available(&mut self) -> bool {
         if let Some(ref mut stream) = self.stream {
-            Self::check_data(stream).unwrap_or(false)
+            Self::check_data(stream).await.unwrap_or(false)
         } else {
             false
         }
     }
 
-    pub fn negotiate_protocol_version(&mut self) -> Result<(), RTDEError> {
+    pub async fn negotiate_protocol_version(&mut self) -> Result<(), RTDEError> {
         let cmd = RTDECommand::RtdeRequestProtocolVersion;
         let version: u8 = RTDE_PROTOCOL_VERSION;
         let buffer: Vec<u8> = vec![0, version]; // First byte is null, second is version
 
         debug!("Negotiating protocol version {}", version);
         let payload: String = String::from_utf8_lossy(&buffer).to_string();
-        self.send_all(cmd as u32, payload)?;
+        self.send_all(cmd as u32, payload).await?;
         debug!("Done sending RTDE_REQUEST_PROTOCOL_VERSION");
 
         // Receive and process response
-        match self.receive() {
+        match self.receive().await {
             Ok(_) => {
                 debug!("Protocol version negotiation successful");
                 Ok(())
@@ -343,14 +340,8 @@ impl RTDE {
         }
     }
 
-    pub fn receive(&mut self) -> Result<(), RTDEError> {
+    pub async fn receive(&mut self) -> Result<(), RTDEError> {
         debug!("Receiving...");
-
-        // Set read timeout on the socket
-        self.stream
-            .as_mut()
-            .ok_or(RTDEError::ConnectionError("No stream available".to_string()))?
-            .set_read_timeout(Some(Duration::from_secs(2)))?;
 
         // Read Header
         let mut header_data = vec![0u8; HEADER_SIZE as usize];
@@ -358,7 +349,8 @@ impl RTDE {
             .stream
             .as_mut()
             .ok_or(RTDEError::ConnectionError("No stream available".to_string()))?
-            .read_exact(&mut header_data);
+            .read_exact(&mut header_data)
+            .await;
 
         match read_result {
             Ok(_) => {
@@ -381,7 +373,7 @@ impl RTDE {
                 let body_size = (msg_size - HEADER_SIZE) as usize;
                 let mut data = vec![0u8; body_size];
 
-                match self.stream.as_mut().unwrap().read_exact(&mut data) {
+                match self.stream.as_mut().unwrap().read_exact(&mut data).await {
                     Ok(_) => {
                         debug!("Received body data of size: {}", body_size);
                         // Process the response based on msg_cmd
@@ -496,29 +488,30 @@ impl RTDE {
         }
     }
 
-    pub fn receive_data(&mut self, robot_state: &Arc<Mutex<RobotState>>) -> Result<(), RTDEError> {
-        let mut message_offset: u32 = 0;
-        let mut packet_data_offset: u32 = 0;
+    pub async fn receive_data(
+        &mut self,
+        robot_state: &Arc<Mutex<RobotState>>,
+    ) -> Result<(), RTDEError> {
+        info!("Receiving data...");
+        let mut message_offset: u32;
+        let mut packet_data_offset: u32;
 
-        // Prepare buffer of 4096 bytes
+        // Prepare buffer for reading
         let mut data = vec![0u8; 4096];
 
-        // Read from socket
-        let data_len = self
-            .stream
-            .as_mut()
-            .ok_or(RTDEError::ConnectionError("No stream available".to_string()))?
-            .read(&mut data)?;
-
-        // Add data to the buffer
+        // Read with timeout
+        let data_len = self.stream.as_mut().unwrap().read(&mut data).await?;
+        info!("Data len: {}", data_len);
         self.buffer.extend(data[..data_len].iter());
 
         while self.buffer.len() >= HEADER_SIZE as usize {
+            debug!("Buffer len: {}", self.buffer.len());
             message_offset = 0;
 
             // Read RTDEControlHeader
             let packet_header = read_rtde_header(&self.buffer, &mut message_offset);
 
+            debug!("Packet header msg size: {}", packet_header.msg_size);
             if self.buffer.len() >= packet_header.msg_size as usize {
                 debug!(
                     "Packet header msg size: {}, buffer len: {}",
@@ -531,26 +524,28 @@ impl RTDE {
                 let packet: Vec<u8> = header_and_packet.drain(HEADER_SIZE as usize..).collect();
 
                 // Check for consecutive data packages
-                if self.buffer.len() >= HEADER_SIZE as usize
-                    && packet_header.msg_cmd == RTDECommand::RtdeDataPackage as u8
-                {
-                    let next_header = read_rtde_header(&self.buffer, &mut message_offset);
-                    if next_header.msg_cmd == RTDECommand::RtdeDataPackage as u8 {
-                        if self.verbose {
-                            println!("skipping package(1)");
-                        }
-                        continue;
-                    }
-                }
+                // if self.buffer.len() >= HEADER_SIZE as usize
+                //     && packet_header.msg_cmd == RTDECommand::RtdeDataPackage as u8
+                // {
+                //     debug!("Reading header")
+                //     let next_header = read_rtde_header(&self.buffer, &mut message_offset);
+                //     if next_header.msg_cmd == RTDECommand::RtdeDataPackage as u8 {
+                //         if self.verbose {
+                //             println!("skipping package(1)");
+                //         }
+                //         continue;
+                //     }
+                // }
 
                 if packet_header.msg_cmd == RTDECommand::RtdeDataPackage as u8 {
                     packet_data_offset = 0;
                     let _recipe_id = get_u8(&packet, &mut packet_data_offset);
 
                     // Lock the robot state for updates
-                    let mut robot_state_lock = robot_state.lock().unwrap();
+                    let mut robot_state_lock = robot_state.lock().await;
 
                     // Read all variables specified by the user
+                    let mut counter = 0;
                     for output_name in &self.output_names {
                         if let Some(entry) = robot_state_lock.state_data.get(output_name) {
                             match entry {
@@ -566,8 +561,8 @@ impl RTDE {
                                         unpack_vector6d(&packet, &mut packet_data_offset)
                                     };
                                     debug!(
-                                        "{} VectorDouble Parsed data: {:?}",
-                                        output_name, parsed_data
+                                        "{}. offset={} {} VectorDouble Parsed data: {:?}",
+                                        counter, packet_data_offset, output_name, parsed_data
                                     );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
@@ -576,7 +571,10 @@ impl RTDE {
                                 },
                                 StateDataTypes::Double(_) => {
                                     let parsed_data = get_double(&packet, &mut packet_data_offset);
-                                    debug!("{} Double Parsed data: {:?}", output_name, parsed_data);
+                                    debug!(
+                                        "{}. offset={} {} Double Parsed data: {:?}",
+                                        counter, packet_data_offset, output_name, parsed_data
+                                    );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::Double(parsed_data),
@@ -584,7 +582,10 @@ impl RTDE {
                                 },
                                 StateDataTypes::Int32(_) => {
                                     let parsed_data = get_i32(&packet, &mut packet_data_offset);
-                                    debug!("{} Int32 Parsed data: {:?}", output_name, parsed_data);
+                                    debug!(
+                                        "{}. offset={} {} Int32 Parsed data: {:?}",
+                                        counter, packet_data_offset, output_name, parsed_data
+                                    );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::Int32(parsed_data),
@@ -592,7 +593,10 @@ impl RTDE {
                                 },
                                 StateDataTypes::Uint32(_) => {
                                     let parsed_data = get_u32(&packet, &mut packet_data_offset);
-                                    debug!("{} Uint32 Parsed data: {:?}", output_name, parsed_data);
+                                    debug!(
+                                        "{}. offset={} {} Uint32 Parsed data: {:?}",
+                                        counter, packet_data_offset, output_name, parsed_data
+                                    );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::Uint32(parsed_data),
@@ -600,7 +604,10 @@ impl RTDE {
                                 },
                                 StateDataTypes::Uint64(_) => {
                                     let parsed_data = get_u64(&packet, &mut packet_data_offset);
-                                    debug!("{} Uint64 Parsed data: {:?}", output_name, parsed_data);
+                                    debug!(
+                                        "{}. offset={} {} Uint64 Parsed data: {:?}",
+                                        counter, packet_data_offset, output_name, parsed_data
+                                    );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::Uint64(parsed_data),
@@ -610,8 +617,8 @@ impl RTDE {
                                     let parsed_data =
                                         unpack_vector6_i32(&packet, &mut packet_data_offset);
                                     debug!(
-                                        "{} VectorInt Parsed data: {:?}",
-                                        output_name, parsed_data
+                                        "{}. offset={} {} VectorInt Parsed data: {:?}",
+                                        counter, packet_data_offset, output_name, parsed_data
                                     );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
@@ -621,8 +628,8 @@ impl RTDE {
                                 StateDataTypes::Boolean(_) => {
                                     let parsed_data = get_bool(&packet, &mut packet_data_offset);
                                     debug!(
-                                        "{} Boolean Parsed data: {:?}",
-                                        output_name, parsed_data
+                                        "{}. offset={} {} Boolean Parsed data: {:?}",
+                                        counter, packet_data_offset, output_name, parsed_data
                                     );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
@@ -630,6 +637,7 @@ impl RTDE {
                                     );
                                 },
                             }
+                            counter += 1;
                         } else {
                             debug!(
                                 "Unknown variable name: {} please verify the output setup!",
@@ -638,15 +646,17 @@ impl RTDE {
                         }
                     }
 
+                    debug!("Robot state lock: {}", robot_state_lock.get_first_state_received());
                     if !robot_state_lock.get_first_state_received() {
                         robot_state_lock.set_first_state_received(true);
                     }
 
                     drop(robot_state_lock);
                 } else if self.verbose {
-                    println!("skipping package(2)");
+                    debug!("skipping package(2)");
                 }
             } else {
+                debug!("Breaking");
                 break;
             }
         }
@@ -662,7 +672,7 @@ impl RTDE {
         todo!()
     }
 
-    pub fn send_all(&mut self, command: u32, payload: String) -> Result<(), RTDEError> {
+    pub async fn send_all(&mut self, command: u32, payload: String) -> Result<(), RTDEError> {
         debug!("Sending... {}", command);
         // payload.as_bytes().iter().for_each(|b| debug!("Byte: {}", b));
         debug!("Payload size: {}", payload.len());
@@ -689,30 +699,32 @@ impl RTDE {
         debug!("Buffer as string: {}", String::from_utf8_lossy(&buffer));
 
         if self.is_connected() {
-            self.stream.as_mut().unwrap().write_all(&buffer)?;
+            self.stream.as_mut().unwrap().write_all(&buffer).await?;
             debug!("Done sending all");
         }
 
         Ok(())
     }
 
-    pub fn send_start(&mut self) -> Result<(), RTDEError> {
+    pub async fn send_start(&mut self) -> Result<(), RTDEError> {
+        debug!("Sending start...");
         let cmd = RTDECommand::RtdeControlPackageStart;
-        self.send_all(cmd as u32, String::new())?;
+        self.send_all(cmd as u32, String::new()).await?;
         debug!("Done sending RTDE_CONTROL_PACKAGE_START");
-        self.receive()?;
+        self.receive().await?;
         Ok(())
     }
 
-    pub fn send_pause(&mut self) -> Result<(), RTDEError> {
+    pub async fn send_pause(&mut self) -> Result<(), RTDEError> {
+        debug!("Sending pause...");
         let cmd = RTDECommand::RtdeControlPackagePause;
-        self.send_all(cmd as u32, String::new())?;
+        self.send_all(cmd as u32, String::new()).await?;
         debug!("Done sending RTDE_CONTROL_PACKAGE_PAUSE");
-        self.receive()?;
+        self.receive().await?;
         Ok(())
     }
 
-    pub fn send_output_setup(
+    pub async fn send_output_setup(
         &mut self,
         output_names: &Vec<&str>,
         frequency: f64,
@@ -736,9 +748,9 @@ impl RTDE {
 
         debug!("Payload: {} {:?}", payload.len(), payload);
 
-        self.send_all(cmd as u32, String::from_utf8_lossy(&payload).to_string())?;
+        self.send_all(cmd as u32, String::from_utf8_lossy(&payload).to_string()).await?;
         debug!("Done sending RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS");
-        self.receive()?;
+        self.receive().await?;
         Ok(())
     }
 
