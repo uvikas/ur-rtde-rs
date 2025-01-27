@@ -206,7 +206,7 @@ pub struct RobotCommand {
     ft_rtde_input_enable: Option<i32>,
     reg_int_val: Option<i32>,
     reg_double_val: Option<f64>,
-    val: Option<Vec<f64>>,
+    pub val: Option<Vec<f64>>,
     selection_vector: Option<Vec<i32>>,
     free_axes: Option<Vec<i32>>,
     force_mode_type: Option<i32>,

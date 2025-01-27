@@ -245,6 +245,15 @@ const UR_CONTROLLER_RDY_FOR_CMD: u32 = 1;
 const UR_CONTROLLER_DONE_WITH_CMD: u32 = 2;
 const UR_EXECUTION_TIMEOUT: u32 = 300;
 
+const UR_JOINT_VELOCITY_MIN: f64 = 0.0;
+const UR_JOINT_VELOCITY_MAX: f64 = 3.14;
+const UR_JOINT_ACCELERATION_MIN: f64 = 0.0;
+const UR_JOINT_ACCELERATION_MAX: f64 = 40.0;
+const UR_SERVO_LOOKAHEAD_TIME_MIN: f64 = 0.03;
+const UR_SERVO_LOOKAHEAD_TIME_MAX: f64 = 0.2;
+const UR_SERVO_GAIN_MIN: f64 = 100.0;
+const UR_SERVO_GAIN_MAX: f64 = 2000.0;
+
 #[derive(Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum RuntimeState {
@@ -646,6 +655,41 @@ impl RTDEControl {
     pub async fn disconnect(&mut self) -> Result<(), RTDEError> {
         let mut rtde_lock = self.rtde.lock().await;
         rtde_lock.disconnect().await?;
+        Ok(())
+    }
+
+    // Robot commands
+
+    pub async fn servo_j(
+        &mut self,
+        q: &[f64],
+        speed: f64,
+        acceleration: f64,
+        time: f64,
+        lookahead_time: f64,
+        gain: f64,
+    ) -> Result<(), RTDEError> {
+        assert!(q.len() == 6);
+        assert!(speed >= UR_JOINT_VELOCITY_MIN && speed <= UR_JOINT_VELOCITY_MAX);
+        assert!(
+            acceleration >= UR_JOINT_ACCELERATION_MIN && acceleration <= UR_JOINT_ACCELERATION_MAX
+        );
+        assert!(
+            lookahead_time >= UR_SERVO_LOOKAHEAD_TIME_MIN
+                && lookahead_time <= UR_SERVO_LOOKAHEAD_TIME_MAX
+        );
+        assert!(gain >= UR_SERVO_GAIN_MIN && gain <= UR_SERVO_GAIN_MAX);
+
+        let mut cmd = RobotCommand::new(CommandType::ServoJ, Recipe::Recipe2);
+        let mut q_vec = q.to_vec();
+        q_vec.push(speed);
+        q_vec.push(acceleration);
+        q_vec.push(time);
+        q_vec.push(lookahead_time);
+        q_vec.push(gain);
+        cmd.val = Some(q_vec);
+
+        self.send_command(cmd).await?;
         Ok(())
     }
 }

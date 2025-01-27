@@ -1,3 +1,3 @@
-# RTDE Rust Client
+# Rust RTDE
 
-This is a Rust client for the RTDE protocol used by Universal Robots.
+This is a Rust implementation of the RTDE protocol used by Universal Robots.
