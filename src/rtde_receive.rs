@@ -8,85 +8,8 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::robot_state::RobotState;
-use crate::rtde::{RTDEError, RTDE};
-use log::{debug, info};
-
-// All RTDE fields for e-series UR
-const RTDE_FIELDS: &[&str] = &[
-    "timestamp",
-    "target_q",
-    "target_qd",
-    "target_qdd",
-    "target_current",
-    "target_moment",
-    "actual_q",
-    "actual_qd",
-    "actual_current",
-    "joint_control_output",
-    "actual_TCP_pose",
-    "actual_TCP_speed",
-    "actual_TCP_force",
-    "target_TCP_pose",
-    "target_TCP_speed",
-    "actual_digital_input_bits",
-    "joint_temperatures",
-    "actual_execution_time",
-    "robot_mode",
-    "joint_mode",
-    "safety_mode",
-    "actual_tool_accelerometer",
-    "speed_scaling",
-    "target_speed_fraction",
-    "actual_momentum",
-    "actual_main_voltage",
-    "actual_robot_voltage",
-    "actual_robot_current",
-    "actual_joint_voltage",
-    "actual_digital_output_bits",
-    "runtime_state",
-    "standard_analog_input0",
-    "standard_analog_input1",
-    "standard_analog_output0",
-    "standard_analog_output1",
-    "robot_status_bits",
-    "safety_status_bits",
-    "ft_raw_wrench",
-    "payload",
-    "payload_cog",
-    "payload_inertia",
-    "output_int_register_2",
-    "output_int_register_12",
-    "output_int_register_13",
-    "output_int_register_14",
-    "output_int_register_15",
-    "output_int_register_16",
-    "output_int_register_17",
-    "output_int_register_18",
-    "output_int_register_19",
-    "output_double_register_12",
-    "output_double_register_13",
-    "output_double_register_14",
-    "output_double_register_15",
-    "output_double_register_16",
-    "output_double_register_17",
-    "output_double_register_18",
-    "output_double_register_19",
-];
-
-#[repr(u32)]
-enum SafetyStatusBits {
-    IsNormalMode = 0,
-    IsReducedMode = 1,
-    IsProtectiveStopped = 2,
-    IsRecoveryMode = 3,
-    IsSafeguardStopped = 4,
-    IsSystemEmergencyStopped = 5,
-    IsRobotEmergencyStopped = 6,
-    IsEmergencyStopped = 7,
-    IsViolation = 8,
-    IsFault = 9,
-    IsStoppedDueToSafety = 10,
-}
+use crate::rtde::{RTDEError, SafetyStatusBits, RTDE, RTDE_FIELDS};
+use log::{debug, error, info};
 
 // RTDE Receive Interface
 pub struct RTDEReceive {
@@ -142,14 +65,14 @@ impl RTDEReceive {
 
         interface.start_receive_thread().await?;
 
-        info!("Waiting for robot state...");
+        // info!("Waiting for robot state...");
 
         while !rtde_ready.load(Ordering::Relaxed) {
             debug!("Waiting for robot state...");
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
 
-        info!("Robot state received");
+        // info!("Robot state received");
 
         Ok(interface)
     }
@@ -171,21 +94,21 @@ impl RTDEReceive {
                     let mut rtde_lock = rtde.lock().await;
                     rtde_lock.is_data_available().await
                 };
-                // if is_available_future {
-                let mut no_bytes_avail_cnt_lock = no_bytes_avail_cnt.lock().await;
-                *no_bytes_avail_cnt_lock = 0;
+                if is_available_future {
+                    let mut no_bytes_avail_cnt_lock = no_bytes_avail_cnt.lock().await;
+                    *no_bytes_avail_cnt_lock = 0;
 
-                {
-                    let mut rtde_lock = rtde.lock().await;
-                    rtde_lock.receive_data(&robot_state).await.unwrap();
+                    {
+                        let mut rtde_lock = rtde.lock().await;
+                        rtde_lock.receive_data(&robot_state).await.unwrap();
+                    }
+                } else {
+                    let mut no_bytes_avail_cnt_lock = no_bytes_avail_cnt.lock().await;
+                    *no_bytes_avail_cnt_lock += 1;
+                    if *no_bytes_avail_cnt_lock > 100 {
+                        error!("No bytes available");
+                    }
                 }
-                // } else {
-                //     let mut no_bytes_avail_cnt_lock = no_bytes_avail_cnt.lock().await;
-                //     *no_bytes_avail_cnt_lock += 1;
-                //     if *no_bytes_avail_cnt_lock > 20 {
-                //         debug!("No bytes available");
-                //     }
-                // }
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
             debug!("STOPPED receive thread {}", stop_receive_thread.load(Ordering::Relaxed));
@@ -245,6 +168,7 @@ impl RTDEReceive {
     }
 
     pub async fn disconnect(&mut self) -> Result<(), RTDEError> {
+        // info!("Disconnecting from robot");
         self.stop_receive_thread.store(true, Ordering::Relaxed);
         if let Some(thread) = self.receive_thread.take() {
             thread.await.unwrap();
@@ -256,3 +180,9 @@ impl RTDEReceive {
         Ok(())
     }
 }
+
+// impl Drop for RTDEReceive {
+//     fn drop(&mut self) {
+//         self.disconnect().await.unwrap();
+//     }
+// }

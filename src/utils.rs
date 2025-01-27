@@ -140,3 +140,47 @@ pub fn unpack_vector6_i32(data: &[u8], message_offset: &mut u32) -> Vec<i32> {
     }
     vector_6_int32
 }
+
+pub fn pack_int32(value: i32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(4);
+    bytes.push((value >> 24) as u8);
+    bytes.push((value >> 16) as u8);
+    bytes.push((value >> 8) as u8);
+    bytes.push(value as u8);
+    bytes
+}
+
+pub fn pack_uint32(value: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(4);
+    bytes.push((value >> 24) as u8);
+    bytes.push((value >> 16) as u8);
+    bytes.push((value >> 8) as u8);
+    bytes.push(value as u8);
+    bytes
+}
+
+pub fn pack_vector_n_int32(vector: Vec<i32>) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(vector.len() * 4);
+    for value in vector {
+        bytes.extend(pack_int32(value));
+    }
+    bytes
+}
+
+pub fn pack_vector_n_double(vector: Vec<f64>) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(vector.len() * 8);
+    for value in vector {
+        bytes.extend(pack_double(value));
+    }
+    bytes
+}
+
+pub fn pack_double(value: f64) -> Vec<u8> {
+    let mut output: Vec<u8> = Vec::with_capacity(8);
+    let bytes: [u8; 8] = unsafe { std::mem::transmute(value) };
+
+    for &byte in bytes.iter().rev() {
+        output.push(byte);
+    }
+    output
+}

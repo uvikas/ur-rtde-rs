@@ -4,6 +4,8 @@ mod robot_state;
 mod rtde;
 pub mod rtde_control;
 pub mod rtde_receive;
+mod script_client;
+mod ur_script;
 mod utils;
 
 pub use log;

@@ -13,87 +13,152 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::utils::{
-    double2hexstr, get_bool, get_double, get_i32, get_u32, get_u64, get_u8, hex2bytes,
-    read_rtde_header, unpack_vector3d, unpack_vector6_i32, unpack_vector6d,
+    double2hexstr, get_bool, get_double, get_i32, get_u32, get_u64, get_u8, hex2bytes, pack_double,
+    pack_int32, pack_uint32, pack_vector_n_double, pack_vector_n_int32, read_rtde_header,
+    unpack_vector3d, unpack_vector6_i32, unpack_vector6d,
 };
 
 const RTDE_PROTOCOL_VERSION: u8 = 2;
 const HEADER_SIZE: u16 = 3;
+pub const RTDE_START_SYNCHRONIZATION_TIMEOUT: u64 = 5;
 
-#[derive(Debug)]
-#[allow(dead_code)]
-enum CommandType {
-    MoveJ,
-    MoveJIK,
-    MoveL,
-    MoveLFK,
-    ForceMode,
-    ForceModeStop,
-    ZeroFtSensor,
-    SpeedJ,
-    SpeedL,
-    ServoJ,
-    ServoC,
-    SetStdDigitalOut,
-    SetToolDigitalOut,
-    SpeedStop,
-    ServoStop,
-    SetPayload,
-    TeachMode,
-    EndTeachMode,
-    ForceModeSetDamping,
-    ForceModeSetGainScaling,
-    SetSpeedSlider,
-    SetStdAnalogOut,
-    ServoL,
-    ToolContact,
-    GetSteptime,
-    GetActualJointPositionsHistory,
-    GetTargetWaypoint,
-    SetTcp,
-    GetInverseKinematicsArgs,
-    ProtectiveStop,
-    StopL,
-    StopJ,
-    SetWatchdog,
-    IsPoseWithinSafetyLimits,
-    IsJointsWithinSafetyLimits,
-    GetJointTorques,
-    PoseTrans,
-    GetTcpOffset,
-    JogStart,
-    JogStop,
-    GetForwardKinematicsDefault,
-    GetForwardKinematicsArgs,
-    MovePath,
-    GetInverseKinematicsDefault,
-    IsSteady,
-    SetConfDigitalOut,
-    SetInputIntRegister,
-    SetInputDoubleRegister,
-    MoveUntilContact,
-    FreedriveMode,
-    EndFreedriveMode,
-    GetFreedriveStatus,
-    SetExternalForceTorque,
-    FtRtdeInputEnable,
-    EnableExternalFtSensor,
-    GetActualToolFlangePose,
-    SetGravity,
-    GetInverseKinematicsHasSolutionDefault,
-    GetInverseKinematicsHasSolutionArgs,
-    StartContactDetection,
-    StopContactDetection,
-    ReadContactDetection,
-    SetTargetPayload,
-    StopScript,
-    NoCmd,
+// All RTDE fields for e-series UR
+pub const RTDE_FIELDS: &[&str] = &[
+    "timestamp",
+    "target_q",
+    "target_qd",
+    "target_qdd",
+    "target_current",
+    "target_moment",
+    "actual_q",
+    "actual_qd",
+    "actual_current",
+    "joint_control_output",
+    "actual_TCP_pose",
+    "actual_TCP_speed",
+    "actual_TCP_force",
+    "target_TCP_pose",
+    "target_TCP_speed",
+    "actual_digital_input_bits",
+    "joint_temperatures",
+    "actual_execution_time",
+    "robot_mode",
+    "joint_mode",
+    "safety_mode",
+    "actual_tool_accelerometer",
+    "speed_scaling",
+    "target_speed_fraction",
+    "actual_momentum",
+    "actual_main_voltage",
+    "actual_robot_voltage",
+    "actual_robot_current",
+    "actual_joint_voltage",
+    "actual_digital_output_bits",
+    "runtime_state",
+    "standard_analog_input0",
+    "standard_analog_input1",
+    "standard_analog_output0",
+    "standard_analog_output1",
+    "robot_status_bits",
+    "safety_status_bits",
+    "ft_raw_wrench",
+    "payload",
+    "payload_cog",
+    "payload_inertia",
+    "output_int_register_2",
+    "output_int_register_12",
+    "output_int_register_13",
+    "output_int_register_14",
+    "output_int_register_15",
+    "output_int_register_16",
+    "output_int_register_17",
+    "output_int_register_18",
+    "output_int_register_19",
+    "output_double_register_12",
+    "output_double_register_13",
+    "output_double_register_14",
+    "output_double_register_15",
+    "output_double_register_16",
+    "output_double_register_17",
+    "output_double_register_18",
+    "output_double_register_19",
+];
+
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[repr(u8)]
+pub enum CommandType {
+    NoCmd = 0,
+    MoveJ = 1,
+    MoveJIK = 2,
+    MoveL = 3,
+    MoveLFK = 4,
+    ForceMode = 6,
+    ForceModeStop = 7,
+    ZeroFtSensor = 8,
+    SpeedJ = 9,
+    SpeedL = 10,
+    ServoJ = 11,
+    ServoC = 12,
+    SetStdDigitalOut = 13,
+    SetToolDigitalOut = 14,
+    SpeedStop = 15,
+    ServoStop = 16,
+    SetPayload = 17,
+    TeachMode = 18,
+    EndTeachMode = 19,
+    ForceModeSetDamping = 20,
+    ForceModeSetGainScaling = 21,
+    SetSpeedSlider = 22,
+    SetStdAnalogOut = 23,
+    ServoL = 24,
+    ToolContact = 25,
+    GetSteptime = 26,
+    GetActualJointPositionsHistory = 27,
+    GetTargetWaypoint = 28,
+    SetTcp = 29,
+    GetInverseKinematicsArgs = 30,
+    ProtectiveStop = 31,
+    StopL = 33,
+    StopJ = 34,
+    SetWatchdog = 35,
+    IsPoseWithinSafetyLimits = 36,
+    IsJointsWithinSafetyLimits = 37,
+    GetJointTorques = 38,
+    PoseTrans = 39,
+    GetTcpOffset = 40,
+    JogStart = 41,
+    JogStop = 42,
+    GetForwardKinematicsDefault = 43,
+    GetForwardKinematicsArgs = 44,
+    MovePath = 45,
+    GetInverseKinematicsDefault = 46,
+    IsSteady = 47,
+    SetConfDigitalOut = 48,
+    SetInputIntRegister = 49,
+    SetInputDoubleRegister = 50,
+    MoveUntilContact = 51,
+    FreedriveMode = 52,
+    EndFreedriveMode = 53,
+    GetFreedriveStatus = 54,
+    SetExternalForceTorque = 55,
+    FtRtdeInputEnable = 56,
+    EnableExternalFtSensor = 57,
+    GetActualToolFlangePose = 58,
+    SetGravity = 59,
+    GetInverseKinematicsHasSolutionDefault = 60,
+    GetInverseKinematicsHasSolutionArgs = 61,
+    StartContactDetection = 62,
+    StopContactDetection = 63,
+    ReadContactDetection = 64,
+    SetTargetPayload = 65,
+    Watchdog = 99,
+    StopScript = 255,
 }
 
 #[derive(Debug)]
 #[repr(u8)]
 #[allow(dead_code)]
-enum Recipe {
+pub enum Recipe {
     Recipe1 = 1,
     Recipe2 = 2,
     Recipe3 = 3,
@@ -117,57 +182,75 @@ enum Recipe {
     Recipe21 = 21,
 }
 
+#[repr(u32)]
+pub enum SafetyStatusBits {
+    IsNormalMode = 0,
+    IsReducedMode = 1,
+    IsProtectiveStopped = 2,
+    IsRecoveryMode = 3,
+    IsSafeguardStopped = 4,
+    IsSystemEmergencyStopped = 5,
+    IsRobotEmergencyStopped = 6,
+    IsEmergencyStopped = 7,
+    IsViolation = 8,
+    IsFault = 9,
+    IsStoppedDueToSafety = 10,
+}
+
+#[derive(Debug)]
 #[allow(dead_code)]
 pub struct RobotCommand {
-    command_type: CommandType,
+    pub command_type: CommandType,
     recipe: Recipe,
-    ft_rtde_input_enable: Option<u32>,
-    reg_int_val_: Option<i32>,
-    reg_double_val_: Option<f64>,
-    val_: Option<Vec<f64>>,
-    selection_vector_: Option<Vec<i32>>,
-    free_axes_: Option<Vec<i32>>,
-    force_mode_type_: Option<i32>,
-    std_digital_out_: Option<u8>,
-    std_digital_out_mask_: Option<u8>,
-    configurable_digital_out_: Option<u8>,
-    configurable_digital_out_mask_: Option<u8>,
-    std_tool_out_: Option<u8>,
-    std_tool_out_mask_: Option<u8>,
-    std_analog_output_mask_: Option<u8>,
-    std_analog_output_type_: Option<u8>,
-    std_analog_output_0_: Option<f64>,
-    std_analog_output_1_: Option<f64>,
-    speed_slider_mask_: Option<i32>,
-    speed_slider_fraction_: Option<f64>,
-    steps_: Option<u32>,
+    async_: Option<i32>,
+    ft_rtde_input_enable: Option<i32>,
+    reg_int_val: Option<i32>,
+    reg_double_val: Option<f64>,
+    val: Option<Vec<f64>>,
+    selection_vector: Option<Vec<i32>>,
+    free_axes: Option<Vec<i32>>,
+    force_mode_type: Option<i32>,
+    std_digital_out: Option<u8>,
+    std_digital_out_mask: Option<u8>,
+    configurable_digital_out: Option<u8>,
+    configurable_digital_out_mask: Option<u8>,
+    std_tool_out: Option<u8>,
+    std_tool_out_mask: Option<u8>,
+    std_analog_output_mask: Option<u8>,
+    std_analog_output_type: Option<u8>,
+    std_analog_output_0: Option<f64>,
+    std_analog_output_1: Option<f64>,
+    speed_slider_mask: Option<i32>,
+    speed_slider_fraction: Option<f64>,
+    steps: Option<u32>,
 }
 
 impl RobotCommand {
-    pub fn new() -> Self {
+    pub fn new(command_type: CommandType, recipe: Recipe) -> Self {
         Self {
-            command_type: CommandType::NoCmd,
-            recipe: Recipe::Recipe1,
+            command_type,
+            recipe,
+            async_: None,
             ft_rtde_input_enable: None,
-            reg_int_val_: None,
-            reg_double_val_: None,
-            val_: None,
-            selection_vector_: None,
-            free_axes_: None,
-            force_mode_type_: None,
-            std_digital_out_: None,
-            std_digital_out_mask_: None,
-            configurable_digital_out_: None,
-            configurable_digital_out_mask_: None,
-            std_tool_out_: None,
-            std_tool_out_mask_: None,
-            std_analog_output_mask_: None,
-            std_analog_output_type_: None,
-            std_analog_output_0_: None,
-            std_analog_output_1_: None,
-            speed_slider_mask_: None,
-            speed_slider_fraction_: None,
-            steps_: None,
+            reg_int_val: None,
+            reg_double_val: None,
+            val: None,
+            selection_vector: None,
+            free_axes: None,
+            force_mode_type: None,
+            std_digital_out: None,
+            std_digital_out_mask: None,
+            configurable_digital_out: None,
+            configurable_digital_out_mask: None,
+            std_tool_out: None,
+            std_tool_out_mask: None,
+            std_analog_output_mask: None,
+            std_analog_output_type: None,
+            std_analog_output_0: None,
+            std_analog_output_1: None,
+            speed_slider_mask: None,
+            speed_slider_fraction: None,
+            steps: None,
         }
     }
 }
@@ -202,6 +285,10 @@ pub enum RTDEError {
     ProtocolError(String),
     StateError(String),
     NoDataAvailable(String),
+    RobotNotInRemoteControl(String),
+    RobotConnectionTimeout(String),
+    ScriptClientError(String),
+    DashboardError(String),
 }
 
 impl std::error::Error for RTDEError {}
@@ -213,6 +300,10 @@ impl std::fmt::Display for RTDEError {
             Self::ProtocolError(msg) => write!(f, "Protocol error: {}", msg),
             Self::StateError(msg) => write!(f, "State error: {}", msg),
             Self::NoDataAvailable(msg) => write!(f, "No data available: {}", msg),
+            Self::RobotNotInRemoteControl(msg) => write!(f, "Robot not in remote control: {}", msg),
+            Self::DashboardError(msg) => write!(f, "Dashboard error: {}", msg),
+            Self::RobotConnectionTimeout(msg) => write!(f, "Robot connection timeout: {}", msg),
+            Self::ScriptClientError(msg) => write!(f, "Script client error: {}", msg),
         }
     }
 }
@@ -323,8 +414,7 @@ impl RTDE {
         let buffer: Vec<u8> = vec![0, version]; // First byte is null, second is version
 
         debug!("Negotiating protocol version {}", version);
-        let payload: String = String::from_utf8_lossy(&buffer).to_string();
-        self.send_all(cmd as u32, payload).await?;
+        self.send_all(cmd as u32, buffer.clone()).await?;
         debug!("Done sending RTDE_REQUEST_PROTOCOL_VERSION");
 
         // Receive and process response
@@ -492,7 +582,7 @@ impl RTDE {
         &mut self,
         robot_state: &Arc<Mutex<RobotState>>,
     ) -> Result<(), RTDEError> {
-        info!("Receiving data...");
+        debug!("Receiving data...");
         let mut message_offset: u32;
         let mut packet_data_offset: u32;
 
@@ -501,7 +591,7 @@ impl RTDE {
 
         // Read with timeout
         let data_len = self.stream.as_mut().unwrap().read(&mut data).await?;
-        info!("Data len: {}", data_len);
+        debug!("Data len: {}", data_len);
         self.buffer.extend(data[..data_len].iter());
 
         while self.buffer.len() >= HEADER_SIZE as usize {
@@ -560,10 +650,10 @@ impl RTDE {
                                     } else {
                                         unpack_vector6d(&packet, &mut packet_data_offset)
                                     };
-                                    debug!(
-                                        "{}. offset={} {} VectorDouble Parsed data: {:?}",
-                                        counter, packet_data_offset, output_name, parsed_data
-                                    );
+                                    // debug!(
+                                    //     "{}. offset={} {} VectorDouble Parsed data: {:?}",
+                                    //     counter, packet_data_offset, output_name, parsed_data
+                                    // );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::VectorDouble(parsed_data),
@@ -571,10 +661,10 @@ impl RTDE {
                                 },
                                 StateDataTypes::Double(_) => {
                                     let parsed_data = get_double(&packet, &mut packet_data_offset);
-                                    debug!(
-                                        "{}. offset={} {} Double Parsed data: {:?}",
-                                        counter, packet_data_offset, output_name, parsed_data
-                                    );
+                                    // debug!(
+                                    //     "{}. offset={} {} Double Parsed data: {:?}",
+                                    //     counter, packet_data_offset, output_name, parsed_data
+                                    // );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::Double(parsed_data),
@@ -582,10 +672,10 @@ impl RTDE {
                                 },
                                 StateDataTypes::Int32(_) => {
                                     let parsed_data = get_i32(&packet, &mut packet_data_offset);
-                                    debug!(
-                                        "{}. offset={} {} Int32 Parsed data: {:?}",
-                                        counter, packet_data_offset, output_name, parsed_data
-                                    );
+                                    // debug!(
+                                    //     "{}. offset={} {} Int32 Parsed data: {:?}",
+                                    //     counter, packet_data_offset, output_name, parsed_data
+                                    // );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::Int32(parsed_data),
@@ -593,10 +683,10 @@ impl RTDE {
                                 },
                                 StateDataTypes::Uint32(_) => {
                                     let parsed_data = get_u32(&packet, &mut packet_data_offset);
-                                    debug!(
-                                        "{}. offset={} {} Uint32 Parsed data: {:?}",
-                                        counter, packet_data_offset, output_name, parsed_data
-                                    );
+                                    // debug!(
+                                    //     "{}. offset={} {} Uint32 Parsed data: {:?}",
+                                    //     counter, packet_data_offset, output_name, parsed_data
+                                    // );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::Uint32(parsed_data),
@@ -604,10 +694,10 @@ impl RTDE {
                                 },
                                 StateDataTypes::Uint64(_) => {
                                     let parsed_data = get_u64(&packet, &mut packet_data_offset);
-                                    debug!(
-                                        "{}. offset={} {} Uint64 Parsed data: {:?}",
-                                        counter, packet_data_offset, output_name, parsed_data
-                                    );
+                                    // debug!(
+                                    //     "{}. offset={} {} Uint64 Parsed data: {:?}",
+                                    //     counter, packet_data_offset, output_name, parsed_data
+                                    // );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::Uint64(parsed_data),
@@ -616,10 +706,10 @@ impl RTDE {
                                 StateDataTypes::VectorInt(_) => {
                                     let parsed_data =
                                         unpack_vector6_i32(&packet, &mut packet_data_offset);
-                                    debug!(
-                                        "{}. offset={} {} VectorInt Parsed data: {:?}",
-                                        counter, packet_data_offset, output_name, parsed_data
-                                    );
+                                    // debug!(
+                                    //     "{}. offset={} {} VectorInt Parsed data: {:?}",
+                                    //     counter, packet_data_offset, output_name, parsed_data
+                                    // );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::VectorInt(parsed_data),
@@ -627,10 +717,10 @@ impl RTDE {
                                 },
                                 StateDataTypes::Boolean(_) => {
                                     let parsed_data = get_bool(&packet, &mut packet_data_offset);
-                                    debug!(
-                                        "{}. offset={} {} Boolean Parsed data: {:?}",
-                                        counter, packet_data_offset, output_name, parsed_data
-                                    );
+                                    // debug!(
+                                    //     "{}. offset={} {} Boolean Parsed data: {:?}",
+                                    //     counter, packet_data_offset, output_name, parsed_data
+                                    // );
                                     robot_state_lock.state_data.insert(
                                         output_name.to_string(),
                                         StateDataTypes::Boolean(parsed_data),
@@ -668,15 +758,137 @@ impl RTDE {
         todo!()
     }
 
-    pub fn send(&self, command: RobotCommand) -> Result<(), RTDEError> {
-        todo!()
+    pub async fn send(&mut self, command: RobotCommand) -> Result<(), RTDEError> {
+        // info!("Sending robot command: {:?}", command);
+
+        let data_cmd = RTDECommand::RtdeDataPackage as u8;
+        let mut cmd_packed: Vec<u8> = pack_int32(command.command_type as i32);
+        // info!("Command packed: {:?}", cmd_packed);
+
+        // print raw binary balues of each cmd
+
+        if command.command_type == CommandType::FtRtdeInputEnable
+            || command.command_type == CommandType::EnableExternalFtSensor
+        {
+            let ft_rtde_input_enable_packed: Vec<u8> =
+                pack_int32(command.ft_rtde_input_enable.unwrap());
+            cmd_packed.extend(ft_rtde_input_enable_packed);
+        }
+
+        if command.command_type == CommandType::FreedriveMode {
+            let free_axes_packed: Vec<u8> = pack_vector_n_int32(command.free_axes.unwrap());
+            cmd_packed.extend(free_axes_packed);
+        }
+
+        if command.command_type == CommandType::SetInputIntRegister {
+            let reg_int_packed: Vec<u8> = pack_int32(command.reg_int_val.unwrap());
+            cmd_packed.extend(reg_int_packed);
+        }
+
+        if command.command_type == CommandType::SetInputDoubleRegister {
+            let reg_double_packed: Vec<u8> = pack_double(command.reg_double_val.unwrap());
+            cmd_packed.extend(reg_double_packed);
+        }
+
+        if command.command_type == CommandType::Watchdog {
+            let watchdog_packed: Vec<u8> = pack_int32(CommandType::NoCmd as i32);
+            cmd_packed.extend(watchdog_packed);
+        }
+
+        if command.command_type == CommandType::ForceMode {
+            let force_mode_type_packed: Vec<u8> = pack_int32(command.force_mode_type.unwrap());
+            cmd_packed.extend(force_mode_type_packed);
+
+            let sel_vector_packed: Vec<u8> = pack_vector_n_int32(command.selection_vector.unwrap());
+            cmd_packed.extend(sel_vector_packed);
+        }
+
+        if command.command_type == CommandType::GetActualJointPositionsHistory {
+            let actual_joint_positions_history_packed: Vec<u8> =
+                pack_uint32(command.steps.unwrap());
+            cmd_packed.extend(actual_joint_positions_history_packed);
+        }
+
+        // info!("Command packed: {:?}", cmd_packed);
+
+        if command.val.is_some() {
+            let vector_nd_packed: Vec<u8> = pack_vector_n_double(command.val.unwrap());
+            cmd_packed.extend(vector_nd_packed);
+        }
+
+        if command.command_type == CommandType::MoveJ
+            || command.command_type == CommandType::MoveJIK
+            || command.command_type == CommandType::MoveL
+            || command.command_type == CommandType::MoveLFK
+            || command.command_type == CommandType::MovePath
+            || command.command_type == CommandType::StopJ
+            || command.command_type == CommandType::StopL
+        {
+            let async_packed: Vec<u8> = pack_int32(command.async_.unwrap());
+            cmd_packed.extend(async_packed);
+        }
+
+        if command.command_type == CommandType::SetStdDigitalOut {
+            cmd_packed.push(command.std_digital_out_mask.unwrap());
+            cmd_packed.push(command.std_digital_out.unwrap());
+        }
+
+        if command.command_type == CommandType::SetConfDigitalOut {
+            cmd_packed.push(command.configurable_digital_out_mask.unwrap());
+            cmd_packed.push(command.configurable_digital_out.unwrap());
+        }
+
+        if command.command_type == CommandType::SetToolDigitalOut {
+            cmd_packed.push(command.std_tool_out_mask.unwrap());
+            cmd_packed.push(command.std_tool_out.unwrap());
+        }
+
+        if command.command_type == CommandType::SetSpeedSlider {
+            let speed_slider_mask_packed: Vec<u8> = pack_int32(command.speed_slider_mask.unwrap());
+            cmd_packed.extend(speed_slider_mask_packed);
+
+            let speed_slider_fraction_packed: Vec<u8> =
+                pack_double(command.speed_slider_fraction.unwrap());
+            cmd_packed.extend(speed_slider_fraction_packed);
+        }
+
+        if command.command_type == CommandType::SetStdAnalogOut {
+            cmd_packed.push(command.std_analog_output_mask.unwrap());
+            cmd_packed.push(command.std_analog_output_type.unwrap());
+
+            let std_analog_output_0_packed: Vec<u8> =
+                pack_double(command.std_analog_output_0.unwrap());
+            cmd_packed.extend(std_analog_output_0_packed);
+
+            let std_analog_output_1_packed: Vec<u8> =
+                pack_double(command.std_analog_output_1.unwrap());
+            cmd_packed.extend(std_analog_output_1_packed);
+        }
+
+        // info!("Command packed: {:?}", cmd_packed);
+
+        cmd_packed.insert(0, command.recipe as u8);
+        // info!("Command packed: {:?}", cmd_packed);
+
+        // info!(
+        //     "Command packed raw: {:?}",
+        //     cmd_packed.iter().map(|b| format!("{:08b} ", b)).collect::<Vec<String>>()
+        // );
+
+        // print bytes of sent
+        // info!("sent: {:?}", cmd_packed);
+
+        self.send_all(data_cmd as u32, cmd_packed.clone()).await?;
+        // debug!("Done sending RTDE_DATA_PACKAGE");
+        self.receive().await?;
+        Ok(())
     }
 
-    pub async fn send_all(&mut self, command: u32, payload: String) -> Result<(), RTDEError> {
-        debug!("Sending... {}", command);
+    pub async fn send_all(&mut self, command: u32, payload: Vec<u8>) -> Result<(), RTDEError> {
+        // info!("Sending... {}", command);
         // payload.as_bytes().iter().for_each(|b| debug!("Byte: {}", b));
-        debug!("Payload size: {}", payload.len());
-        debug!("Payload string: {}", payload);
+        // info!("Payload size: {}", payload.len());
+        // info!("Payload string: {:?}", payload);
 
         let size: u16 = HEADER_SIZE + (payload.len() as u16);
         let cmd_type: u8 = command as u8;
@@ -686,21 +898,23 @@ impl RTDE {
         header[1] = (size & 0xFF) as u8;
         header[2] = cmd_type;
 
-        debug!("Header data: {} {} {}", size, size.to_be(), cmd_type);
-        debug!("Header: {:?}", header);
+        // info!("Header data: {} {} {}", size, size.to_be(), cmd_type);
+        // info!("Header: {:?}", header);
 
-        let payload_bytes = payload.as_bytes();
-        let mut buffer = Vec::with_capacity(header.len() + payload_bytes.len());
+        let mut buffer = Vec::with_capacity(header.len() + payload.len());
         buffer.extend_from_slice(&header);
-        buffer.extend_from_slice(payload_bytes);
+        buffer.extend_from_slice(&payload);
 
-        debug!("Buffer size: {}", buffer.len());
-        debug!("Buffer: {:?}", buffer);
-        debug!("Buffer as string: {}", String::from_utf8_lossy(&buffer));
+        // info!("Buffer size: {}", buffer.len());
+        // info!("Buffer: {:?}", buffer);
+        // info!(
+        //     "Buffer as string: {:?}",
+        //     buffer.iter().map(|b| format!("{:08b} ", b)).collect::<Vec<String>>()
+        // );
 
         if self.is_connected() {
             self.stream.as_mut().unwrap().write_all(&buffer).await?;
-            debug!("Done sending all");
+            // info!("Done sending all");
         }
 
         Ok(())
@@ -709,7 +923,7 @@ impl RTDE {
     pub async fn send_start(&mut self) -> Result<(), RTDEError> {
         debug!("Sending start...");
         let cmd = RTDECommand::RtdeControlPackageStart;
-        self.send_all(cmd as u32, String::new()).await?;
+        self.send_all(cmd as u32, Vec::new()).await?;
         debug!("Done sending RTDE_CONTROL_PACKAGE_START");
         self.receive().await?;
         Ok(())
@@ -718,11 +932,27 @@ impl RTDE {
     pub async fn send_pause(&mut self) -> Result<(), RTDEError> {
         debug!("Sending pause...");
         let cmd = RTDECommand::RtdeControlPackagePause;
-        self.send_all(cmd as u32, String::new()).await?;
+        self.send_all(cmd as u32, Vec::new()).await?;
         debug!("Done sending RTDE_CONTROL_PACKAGE_PAUSE");
         self.receive().await?;
         Ok(())
     }
+
+    pub async fn send_clear(&mut self) -> Result<(), RTDEError> {
+        let cmd = RobotCommand::new(CommandType::NoCmd, Recipe::Recipe4);
+        self.send(cmd).await?;
+        debug!("Done sending RTDE_CONTROL_PACKAGE_CLEAR");
+        // self.receive().await?;
+        Ok(())
+    }
+
+    // pub async fn stop_script(&mut self) -> Result<(), RTDEError> {
+    //     let cmd = RobotCommand::new(CommandType::StopScript, Recipe::Recipe4);
+    //     self.send_command(cmd).await?;
+    //     debug!("Done sending RTDE_CONTROL_PACKAGE_STOP_SCRIPT");
+    //     // self.receive().await?;
+    //     Ok(())
+    // }
 
     pub async fn send_output_setup(
         &mut self,
@@ -748,13 +978,18 @@ impl RTDE {
 
         debug!("Payload: {} {:?}", payload.len(), payload);
 
-        self.send_all(cmd as u32, String::from_utf8_lossy(&payload).to_string()).await?;
+        self.send_all(cmd as u32, payload).await?;
         debug!("Done sending RTDE_CONTROL_PACKAGE_SETUP_OUTPUTS");
         self.receive().await?;
         Ok(())
     }
 
-    pub fn send_input_setup(&self, input_types: Vec<String>) -> Result<(), RTDEError> {
-        todo!()
+    pub async fn send_input_setup(&mut self, input_types: &Vec<&str>) -> Result<(), RTDEError> {
+        let cmd: u32 = RTDECommand::RtdeControlPackageSetupInputs as u32;
+        let payload = input_types.join(",") + ",";
+        self.send_all(cmd, payload.as_bytes().to_vec()).await?;
+        debug!("Done sending RTDE_CONTROL_PACKAGE_SETUP_INPUTS");
+        self.receive().await?;
+        Ok(())
     }
 }
