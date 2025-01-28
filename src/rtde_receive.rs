@@ -117,34 +117,34 @@ impl RTDEReceive {
         Ok(())
     }
 
-    pub async fn get_actual_q(&self) -> Result<Vec<f64>, Box<dyn Error>> {
+    pub async fn get_actual_q(&self) -> Result<Vec<f32>, Box<dyn Error>> {
         let robot_state_lock = self.robot_state.lock().await;
         let actual_q = robot_state_lock.get_state_data("actual_q")?;
-        Ok(actual_q.as_vec_double())
+        Ok(actual_q.as_vec_double().iter().map(|&x| x as f32).collect())
     }
 
-    pub async fn get_actual_qd(&self) -> Result<Vec<f64>, Box<dyn Error>> {
+    pub async fn get_actual_qd(&self) -> Result<Vec<f32>, Box<dyn Error>> {
         let robot_state_lock = self.robot_state.lock().await;
         let actual_qd = robot_state_lock.get_state_data("actual_qd")?;
-        Ok(actual_qd.as_vec_double())
+        Ok(actual_qd.as_vec_double().iter().map(|&x| x as f32).collect())
     }
 
-    pub async fn get_actual_tcp_pose(&self) -> Result<Vec<f64>, Box<dyn Error>> {
+    pub async fn get_actual_tcp_pose(&self) -> Result<Vec<f32>, Box<dyn Error>> {
         let robot_state_lock = self.robot_state.lock().await;
         let actual_tcp_pose = robot_state_lock.get_state_data("actual_TCP_pose")?;
-        Ok(actual_tcp_pose.as_vec_double())
+        Ok(actual_tcp_pose.as_vec_double().iter().map(|&x| x as f32).collect())
     }
 
-    pub async fn get_actual_tcp_speed(&self) -> Result<Vec<f64>, Box<dyn Error>> {
+    pub async fn get_actual_tcp_speed(&self) -> Result<Vec<f32>, Box<dyn Error>> {
         let robot_state_lock = self.robot_state.lock().await;
         let actual_tcp_speed = robot_state_lock.get_state_data("actual_TCP_speed")?;
-        Ok(actual_tcp_speed.as_vec_double())
+        Ok(actual_tcp_speed.as_vec_double().iter().map(|&x| x as f32).collect())
     }
 
-    pub async fn get_actual_tcp_force(&self) -> Result<Vec<f64>, Box<dyn Error>> {
+    pub async fn get_actual_tcp_force(&self) -> Result<Vec<f32>, Box<dyn Error>> {
         let robot_state_lock = self.robot_state.lock().await;
         let actual_tcp_force = robot_state_lock.get_state_data("actual_TCP_force")?;
-        Ok(actual_tcp_force.as_vec_double())
+        Ok(actual_tcp_force.as_vec_double().iter().map(|&x| x as f32).collect())
     }
 
     pub async fn get_robot_mode(&self) -> Result<u32, Box<dyn Error>> {

@@ -692,4 +692,16 @@ impl RTDEControl {
         self.send_command(cmd).await?;
         Ok(())
     }
+
+    pub async fn end_freedrive(&mut self) -> Result<(), RTDEError> {
+        let cmd = RobotCommand::new(CommandType::EndFreedriveMode, Recipe::Recipe4);
+        self.send_command(cmd).await?;
+        Ok(())
+    }
+
+    pub async fn zero_ft_sensor(&mut self) -> Result<(), RTDEError> {
+        let cmd = RobotCommand::new(CommandType::ZeroFtSensor, Recipe::Recipe4);
+        self.send_command(cmd).await?;
+        Ok(())
+    }
 }
