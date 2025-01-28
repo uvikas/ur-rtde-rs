@@ -245,14 +245,14 @@ const UR_CONTROLLER_RDY_FOR_CMD: u32 = 1;
 const UR_CONTROLLER_DONE_WITH_CMD: u32 = 2;
 const UR_EXECUTION_TIMEOUT: u32 = 300;
 
-const UR_JOINT_VELOCITY_MIN: f64 = 0.0;
-const UR_JOINT_VELOCITY_MAX: f64 = 3.14;
-const UR_JOINT_ACCELERATION_MIN: f64 = 0.0;
-const UR_JOINT_ACCELERATION_MAX: f64 = 40.0;
-const UR_SERVO_LOOKAHEAD_TIME_MIN: f64 = 0.03;
-const UR_SERVO_LOOKAHEAD_TIME_MAX: f64 = 0.2;
-const UR_SERVO_GAIN_MIN: f64 = 100.0;
-const UR_SERVO_GAIN_MAX: f64 = 2000.0;
+const UR_JOINT_VELOCITY_MIN: f32 = 0.0;
+const UR_JOINT_VELOCITY_MAX: f32 = 3.14;
+const UR_JOINT_ACCELERATION_MIN: f32 = 0.0;
+const UR_JOINT_ACCELERATION_MAX: f32 = 40.0;
+const UR_SERVO_LOOKAHEAD_TIME_MIN: f32 = 0.03;
+const UR_SERVO_LOOKAHEAD_TIME_MAX: f32 = 0.2;
+const UR_SERVO_GAIN_MIN: f32 = 100.0;
+const UR_SERVO_GAIN_MAX: f32 = 2000.0;
 
 #[derive(Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -267,7 +267,7 @@ pub enum RuntimeState {
 
 pub struct RTDEControl {
     hostname: String,
-    dt: f64,
+    dt: f32,
     fields: Vec<String>,
 
     rtde: Arc<Mutex<RTDE>>,
@@ -299,7 +299,7 @@ impl RTDEControl {
 
         // info!("Connected to dashboard");
 
-        let frequency: f64 = 500.0;
+        let frequency: f32 = 500.0;
         let rtde = Arc::new(Mutex::new(RTDE::new(hostname)));
         {
             debug!("Connecting to robot");
@@ -337,7 +337,7 @@ impl RTDEControl {
 
         {
             let mut rtde_lock = rtde.lock().await;
-            rtde_lock.send_output_setup(&fields, frequency).await?;
+            rtde_lock.send_output_setup(&fields, frequency as f64).await?;
 
             rtde_lock.send_input_setup(&ASYNC_SETP_INPUT_RECIPE.to_vec()).await?;
             rtde_lock.send_input_setup(&SERVOJ_INPUT_RECIPE.to_vec()).await?;
@@ -662,12 +662,12 @@ impl RTDEControl {
 
     pub async fn servo_j(
         &mut self,
-        q: &[f64],
-        speed: f64,
-        acceleration: f64,
-        time: f64,
-        lookahead_time: f64,
-        gain: f64,
+        q: Vec<f32>,
+        speed: f32,
+        acceleration: f32,
+        time: f32,
+        lookahead_time: f32,
+        gain: f32,
     ) -> Result<(), RTDEError> {
         assert!(q.len() == 6);
         assert!(speed >= UR_JOINT_VELOCITY_MIN && speed <= UR_JOINT_VELOCITY_MAX);
@@ -681,13 +681,13 @@ impl RTDEControl {
         assert!(gain >= UR_SERVO_GAIN_MIN && gain <= UR_SERVO_GAIN_MAX);
 
         let mut cmd = RobotCommand::new(CommandType::ServoJ, Recipe::Recipe2);
-        let mut q_vec = q.to_vec();
+        let mut q_vec = q.clone();
         q_vec.push(speed);
         q_vec.push(acceleration);
         q_vec.push(time);
         q_vec.push(lookahead_time);
         q_vec.push(gain);
-        cmd.val = Some(q_vec);
+        cmd.val = Some(q_vec.iter().map(|&x| x as f64).collect());
 
         self.send_command(cmd).await?;
         Ok(())
