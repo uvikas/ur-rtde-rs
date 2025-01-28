@@ -662,7 +662,7 @@ impl RTDEControl {
 
     pub async fn servo_j(
         &mut self,
-        q: Vec<f32>,
+        q: &Vec<f32>,
         speed: f32,
         acceleration: f32,
         time: f32,
